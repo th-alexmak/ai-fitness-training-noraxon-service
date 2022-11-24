@@ -28,7 +28,6 @@
 
   <ItemGroup>
     <Protobuf Include="Protos\noraxon.proto" GrpcServices="Server" />
-    <Protobuf Include="Protos\greet.proto" GrpcServices="Server" />
   </ItemGroup>
 
   <ItemGroup>

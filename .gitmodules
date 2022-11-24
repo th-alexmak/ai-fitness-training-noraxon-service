@@ -1,0 +1,4 @@
+[submodule "Protos"]
+	path = Protos
+	url = git@gitlab.com:limepage-studio/commissioned/the-hong-kong-polytechnic-university/ai-fitness-training/noraxon-service-protobuf.git
+	branch = main
