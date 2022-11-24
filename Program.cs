@@ -1,7 +1,4 @@
 using Microsoft.Extensions.Hosting.WindowsServices;
-using Microsoft.Extensions.Logging.Configuration;
-using Microsoft.Extensions.Logging.EventLog;
-using NoraxonService.Services;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
