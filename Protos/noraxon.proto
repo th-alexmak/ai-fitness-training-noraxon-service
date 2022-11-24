@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+option csharp_namespace = "NoraxonService";
+
+import "google/protobuf/empty.proto";
+package noraxon;
+
+// The greeting service definition.
+service Noraxon {
+  // Sends a greeting
+  rpc Setup (google.protobuf.Empty) returns (google.protobuf.Empty);
+}
