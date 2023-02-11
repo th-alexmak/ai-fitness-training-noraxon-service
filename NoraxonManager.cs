@@ -72,7 +72,7 @@ namespace NoraxonService
                                                  {
                                                      device.Activate();
                                                  }
-                                                 catch (COMException exception)
+                                                 catch (COMException)
                                                  {
                                                      if (deviceManager.GetLastErrorText() ==
                                                          "Operation cannot be performed in state 'active'")
