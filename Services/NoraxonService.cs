@@ -21,11 +21,11 @@ namespace NoraxonService.Services
         /// <returns>Nothing</returns>
         public override async Task<Empty> Setup(Empty request, ServerCallContext context)
         {
-            OperateNoraxon<object>(() =>
-                                   {
-                                       NoraxonManager.Instance.LaunchSetup();
-                                       return null;
-                                   });
+            await OperateNoraxon(() =>
+            {
+                NoraxonManager.Instance.LaunchSetup();
+                return Task.CompletedTask;
+            });
             return request;
         }
 
@@ -37,7 +37,8 @@ namespace NoraxonService.Services
         /// <returns>Serial Numbers</returns>
         public override async Task<GetEmgSensorsResponse> GetSerialNumbers(Empty request, ServerCallContext context)
         {
-            var serialNumbers = OperateNoraxon(NoraxonManager.Instance.GetEmgSerialNumbers);
+            var serialNumbers =
+                await OperateNoraxon(() => Task.FromResult(NoraxonManager.Instance.GetEmgSerialNumbers()));
 
             var response = new GetEmgSensorsResponse();
             response.SerialNumbers.AddRange(serialNumbers);
@@ -49,54 +50,49 @@ namespace NoraxonService.Services
                                               ServerCallContext                       context)
         {
             logger.LogInformation("Started streaming data.");
-            await OperateNoraxon(async () =>
-                                 {
-                                     return NoraxonManager.Instance.StreamData(request.SerialNumbers.ToArray(),
-                                                                               async data =>
-                                                                               {
-                                                                                   var totalReadings =
-                                                                                       data.Sum(emg => emg.Value
-                                                                                                          .Length);
 
-                                                                                   logger
-                                                                                      .LogInformation($"Read {totalReadings} samples from {data.Keys.Count} emg sensors.");
+            Task DataCallback() => NoraxonManager.Instance.StreamData(
+                request.SerialNumbers.ToArray(),
+                async data =>
+                {
+                    var totalReadings = data.Sum(emg => emg.Value.Readings.Count);
 
-                                                                                   StreamDataResponse
-                                                                                       streamDataResponse =
-                                                                                           new();
+                    logger.LogInformation($"Read {totalReadings} samples from {data.Keys.Count} emg sensors.");
 
-                                                                                   foreach (var emg in data)
-                                                                                   {
-                                                                                       var emgSensor =
-                                                                                           new EmgSensor
-                                                                                           {
-                                                                                               SerialNumber =
-                                                                                                   emg.Key
-                                                                                           };
-                                                                                       emgSensor.Readings
-                                                                                                .AddRange(emg
-                                                                                                             .Value);
+                    StreamDataResponse streamDataResponse = new();
+                    foreach (var emg in data)
+                    {
+                        streamDataResponse.EmgSensors.Add(emg.Key, emg.Value);
+                    }
 
-                                                                                       streamDataResponse
-                                                                                          .EmgSensors
-                                                                                          .Add(emg.Key,
-                                                                                               emgSensor);
-                                                                                   }
+                    await responseStream.WriteAsync(streamDataResponse, context.CancellationToken);
+                }, context.CancellationToken);
 
-                                                                                   await responseStream
-                                                                                      .WriteAsync(streamDataResponse,
-                                                                                                  context
-                                                                                                     .CancellationToken);
-                                                                               }, context.CancellationToken);
-                                 });
+            await OperateNoraxon(DataCallback);
             logger.LogInformation("Stopped streaming data.");
         }
 
-        private T? OperateNoraxon<T>(Func<T?> action)
+        private Task OperateNoraxon(Func<Task> action)
         {
             try
             {
-                return action();
+                return action.Invoke();
+            }
+            catch (TimeoutException exception)
+            {
+                throw new RpcException(new Status(StatusCode.Unavailable, exception.Message));
+            }
+            catch (COMException)
+            {
+                throw new RpcException(new Status(StatusCode.Internal, NoraxonManager.Instance.LastErrorMessage));
+            }
+        }
+
+        private Task<T> OperateNoraxon<T>(Func<Task<T>> action)
+        {
+            try
+            {
+                return action.Invoke();
             }
             catch (TimeoutException exception)
             {
