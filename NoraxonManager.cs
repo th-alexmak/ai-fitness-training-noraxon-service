@@ -1,14 +1,12 @@
-﻿using Easy2AcquireCom;
-using Grpc.Core;
-using Sentry;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
+using Easy2AcquireCom;
 
 namespace NoraxonService
 {
     public class NoraxonManager
     {
         private const int LOCK_TIMEOUT = 500;
+
         public static NoraxonManager Instance
         {
             get
@@ -29,10 +27,7 @@ namespace NoraxonService
         /// </summary>
         public void LaunchSetup()
         {
-            ThreadSafeOperation(() =>
-            {
-                return deviceManager.Setup(0);
-            });
+            ThreadSafeOperation(() => deviceManager.Setup(0));
         }
 
         /// <summary>
@@ -42,91 +37,88 @@ namespace NoraxonService
         public string[] GetEmgSerialNumbers()
         {
             return ThreadSafeOperation(() =>
-            {
-                var serialNumbers = new List<string>();
-                var device = deviceManager.GetCurrentDevice();
-                device.SetComponentFilterTags("type.input.analog.emg");
+                                       {
+                                           var serialNumbers = new List<string>();
+                                           var device        = deviceManager.GetCurrentDevice();
+                                           device.SetComponentFilterTags("type.input.analog.emg");
 
-                for (int i = 0; i < device.GetComponentCount(); i++)
-                {
-                    var component = device.GetComponent(i);
-                    serialNumbers.Add(ExtractSerialNumber(component));
-                }
-                return serialNumbers.ToArray();
-            });
+                                           for (var i = 0; i < device.GetComponentCount(); i++)
+                                           {
+                                               var component = device.GetComponent(i);
+                                               serialNumbers.Add(ExtractSerialNumber(component));
+                                           }
+
+                                           return serialNumbers.ToArray();
+                                       });
         }
 
-        public void StreamData(string[] serialNumbers, Action<Dictionary<string, double[]>> dataCallback, CancellationToken cancellationToken)
+        public Task StreamData(IEnumerable<string> serialNumbers, Func<Dictionary<string, double[]>, Task> dataCallback,
+                               CancellationToken   cancellationToken)
         {
-            ThreadSafeOperation<object>(() =>
-            {
-                var device = deviceManager.GetCurrentDevice();
-                var emgComponents = GetEmgComponents(device).Where((pair) =>
-                {
-                    return serialNumbers.Contains(pair.Key);
-                });
+            return ThreadSafeOperation<Task>(async () =>
+                                             {
+                                                 var device = deviceManager.GetCurrentDevice();
+                                                 var emgComponents = GetEmgComponents(device)
+                                                    .Where(pair => serialNumbers
+                                                              .Contains(pair
+                                                                           .Key));
 
-                // Enable the emg sensors.
-                foreach (var emg in emgComponents)
-                {
-                    while (emg.Value.Enabled() <= 0)
-                    {
-                        emg.Value.Enable();
-                    }
-                }
+                                                 // Enable the emg sensors.
+                                                 foreach (var emg in emgComponents)
+                                                     while (emg.Value.Enabled() <= 0)
+                                                         emg.Value.Enable();
 
-                try
-                {
-                    device.Activate();
-                }
-                catch (COMException exception)
-                {
-                    if (deviceManager.GetLastErrorText() == "Operation cannot be performed in state 'active'")
-                    {
-                        device.Stop();
-                        device.Deactivate();
-                    }
-                    else
-                    {
-                        throw exception;
-                    }
-                }
+                                                 try
+                                                 {
+                                                     device.Activate();
+                                                 }
+                                                 catch (COMException exception)
+                                                 {
+                                                     if (deviceManager.GetLastErrorText() ==
+                                                         "Operation cannot be performed in state 'active'")
+                                                     {
+                                                         device.Stop();
+                                                         device.Deactivate();
+                                                     }
+                                                     else
+                                                         throw new COMException(deviceManager.GetLastErrorText());
+                                                 }
 
-                while (!cancellationToken.IsCancellationRequested)
-                {
-                    if ((device.Transfer() & (int)Transfer.TransferDataReady) != 0)
-                    {
-                        // Serial Number => Quants
-                        Dictionary<string, double[]> emgReadings = new();
-                        foreach (var emg in emgComponents)
-                        {
-                            var buffer = new double[emg.Value.GetQuantCount()];
-                            emg.Value.GetQuants(0, buffer.Length, buffer, 0);
-                            emgReadings.Add(emg.Key, buffer);
-                        }
+                                                 while (!cancellationToken.IsCancellationRequested)
+                                                 {
+                                                     if ((device.Transfer() & (int)Transfer.TransferDataReady) != 0)
+                                                     {
+                                                         // Serial Number => Quants
+                                                         Dictionary<string, double[]> emgReadings = new();
+                                                         foreach (var emg in emgComponents)
+                                                         {
+                                                             var buffer    = new double[emg.Value.GetQuantCount()];
+                                                             var bufferRef = (object)buffer;
+                                                             emg.Value.GetQuants(0, buffer.Length, ref bufferRef, 0);
+                                                             buffer = (double[])bufferRef;
+                                                             emgReadings.Add(emg.Key, buffer);
+                                                         }
 
-                        dataCallback(emgReadings);
-                    }
-                    else
-                        Thread.Sleep(25);
-                }
-                device.Stop();
-                device.Deactivate();
+                                                         await dataCallback.Invoke(emgReadings);
+                                                     }
+                                                     else
+                                                         Thread.Sleep(25);
+                                                 }
 
-                // Disable the emg sensors.
-                foreach (var emg in emgComponents)
-                {
-                    emg.Value.Disable();
-                }
+                                                 device.Stop();
+                                                 device.Deactivate();
 
-                return null;
-            });
+                                                 // Disable the emg sensors.
+                                                 foreach (var emg in emgComponents)
+                                                     while (emg.Value.Enabled() > 0)
+                                                         emg.Value.Disable();
+                                             });
         }
 
-        private readonly static object instanceLock = new object();
-        private readonly static object operationLock = new object();
-        private static NoraxonManager instance;
-        private DeviceManager deviceManager;
+        private static readonly object          instanceLock  = new();
+        private static readonly object          operationLock = new();
+        private static          NoraxonManager? instance;
+        private                 DeviceManager   deviceManager;
 
         private NoraxonManager()
         {
@@ -150,25 +142,25 @@ namespace NoraxonService
             switch (LastErrorMessage)
             {
                 case "Device Manager not initialized yet":
-                    {
-                        // It is possible to get "Multiple initialization not supported" error here...
-                        // So far it is not known how to solve other then reboot.
-                        deviceManager.Initialize("");
-                        break;
-                    }
+                {
+                    // It is possible to get "Multiple initialization not supported" error here...
+                    // So far it is not known how to solve other then reboot.
+                    deviceManager.Initialize("");
+                    break;
+                }
                 case "Operation cannot be performed in state 'active'":
-                    {
-                        var device = deviceManager.GetCurrentDevice();
-                        device.Stop();
-                        device.Deactivate();
-                        break;
-                    }
+                {
+                    var device = deviceManager.GetCurrentDevice();
+                    device.Stop();
+                    device.Deactivate();
+                    break;
+                }
                 case "Operation cannot be performed in state 'inactive'":
-                    {
-                        var device = deviceManager.GetCurrentDevice();
-                        device.Activate();
-                        break;
-                    }
+                {
+                    var device = deviceManager.GetCurrentDevice();
+                    device.Activate();
+                    break;
+                }
             }
         }
 
@@ -187,15 +179,24 @@ namespace NoraxonService
             {
                 Monitor.TryEnter(operationLock, LOCK_TIMEOUT, ref lockTaken);
                 if (lockTaken)
-                    return action();
+                {
+                    return action.Invoke();
+                }
                 else
                     throw new TimeoutException("Noraxon system is busy.");
             }
-            catch (COMException exception)
+            catch (COMException)
             {
-                if (trials == 0)
+                if (trials < 3)
                 {
                     TryRecover();
+
+                    if (lockTaken)
+                    {
+                        Monitor.Exit(operationLock);
+                        lockTaken = false;
+                    }
+
                     return ThreadSafeOperation(action, trials + 1);
                 }
                 else
@@ -205,7 +206,8 @@ namespace NoraxonService
             }
             finally
             {
-                if (lockTaken) { Monitor.Exit(operationLock); }
+                if (lockTaken)
+                    Monitor.Exit(operationLock);
             }
         }
 
@@ -214,7 +216,7 @@ namespace NoraxonService
         /// </summary>
         /// <param name="component"></param>
         /// <returns></returns>
-        private string ExtractSerialNumber(IComponent component)
+        private static string ExtractSerialNumber(IComponent component)
         {
 #if DEBUG
             const string prefix = "line.";
@@ -241,10 +243,10 @@ namespace NoraxonService
         {
             var result = new Dictionary<string, IAnalogInput>();
             device.SetComponentFilterTags("type.input.analog");
-            for (int i = 0; i < device.GetComponentCount(); i++)
+            for (var i = 0; i < device.GetComponentCount(); i++)
             {
-                IAnalogInput component = (IAnalogInput)device.GetComponent(i);
-                string serialNumber = ExtractSerialNumber(component);
+                var component    = (IAnalogInput)device.GetComponent(i);
+                var serialNumber = ExtractSerialNumber(component);
                 result.Add(serialNumber, component);
             }
 

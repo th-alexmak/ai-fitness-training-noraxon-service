@@ -1,14 +1,12 @@
-﻿using Easy2AcquireCom;
+﻿using System.Runtime.InteropServices;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
-using System.Runtime.InteropServices;
 
 namespace NoraxonService.Services
 {
     public class NoraxonService : Noraxon.NoraxonBase
     {
         private readonly ILogger<NoraxonService> logger;
-
 
         public NoraxonService(ILogger<NoraxonService> logger)
         {
@@ -24,10 +22,10 @@ namespace NoraxonService.Services
         public override async Task<Empty> Setup(Empty request, ServerCallContext context)
         {
             OperateNoraxon<object>(() =>
-            {
-                NoraxonManager.Instance.LaunchSetup();
-                return null;
-            });
+                                   {
+                                       NoraxonManager.Instance.LaunchSetup();
+                                       return null;
+                                   });
             return request;
         }
 
@@ -46,27 +44,52 @@ namespace NoraxonService.Services
             return response;
         }
 
-        public override async Task StreamData(StreamDataRequest request, IServerStreamWriter<StreamDataResponse> responseStream, ServerCallContext context)
+        public override async Task StreamData(StreamDataRequest                       request,
+                                              IServerStreamWriter<StreamDataResponse> responseStream,
+                                              ServerCallContext                       context)
         {
-            OperateNoraxon<object>(() =>
-            {
-                NoraxonManager.Instance.StreamData(request.SerialNumbers.ToArray(), async (data) =>
-                {
-                    StreamDataResponse streamDataResponse = new();
+            logger.LogInformation("Started streaming data.");
+            await OperateNoraxon(async () =>
+                                 {
+                                     return NoraxonManager.Instance.StreamData(request.SerialNumbers.ToArray(),
+                                                                               async data =>
+                                                                               {
+                                                                                   var totalReadings =
+                                                                                       data.Sum(emg => emg.Value
+                                                                                                          .Length);
 
-                    foreach (var emg in data)
-                    {
-                        var emgSensor = new EmgSensor() { SerialNumber = emg.Key };
-                        emgSensor.Readings.AddRange(emg.Value);
+                                                                                   logger
+                                                                                      .LogInformation($"Read {totalReadings} samples from {data.Keys.Count} emg sensors.");
 
-                        streamDataResponse.EmgSensors.Add(emg.Key, emgSensor);
-                    }
+                                                                                   StreamDataResponse
+                                                                                       streamDataResponse =
+                                                                                           new();
 
-                    await responseStream.WriteAsync(streamDataResponse, context.CancellationToken);
-                }, context.CancellationToken);
+                                                                                   foreach (var emg in data)
+                                                                                   {
+                                                                                       var emgSensor =
+                                                                                           new EmgSensor
+                                                                                           {
+                                                                                               SerialNumber =
+                                                                                                   emg.Key
+                                                                                           };
+                                                                                       emgSensor.Readings
+                                                                                                .AddRange(emg
+                                                                                                             .Value);
 
-                return null;
-            });
+                                                                                       streamDataResponse
+                                                                                          .EmgSensors
+                                                                                          .Add(emg.Key,
+                                                                                               emgSensor);
+                                                                                   }
+
+                                                                                   await responseStream
+                                                                                      .WriteAsync(streamDataResponse,
+                                                                                                  context
+                                                                                                     .CancellationToken);
+                                                                               }, context.CancellationToken);
+                                 });
+            logger.LogInformation("Stopped streaming data.");
         }
 
         private T? OperateNoraxon<T>(Func<T?> action)
